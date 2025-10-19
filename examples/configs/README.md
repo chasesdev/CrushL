@@ -132,46 +132,50 @@ Controls which tools are available without permission prompts.
 
 ## Setup Instructions
 
-### 1. Install LM Studio
+### Quick Start (Zero Config!)
 
-Download and install from [lmstudio.ai](https://lmstudio.ai/)
+The reasoning layer works out of the box with sensible defaults. Just:
 
-### 2. Load a Model
+1. **Install LM Studio**: Download from [lmstudio.ai](https://lmstudio.ai/)
 
-In LM Studio, download and load one of these recommended models:
-- **Qwen3-8B**: Good all-around model
-- **Qwen3-Next-80B**: High-end reasoning (requires more VRAM)
-- **GLM-4.6**: Excellent for complex reasoning tasks
+2. **Load a Model**: In LM Studio, download and load one of these:
+   - **Qwen3-8B**: Good all-around model
+   - **Qwen3-Next-80B**: High-end reasoning (requires more VRAM)
+   - **GLM-4.6**: Excellent for complex reasoning tasks
 
-### 3. Start the Server
+3. **Start the Server**: In LM Studio, go to "Local Server" tab → Click "Start Server" (default: `http://localhost:1234`)
 
-In LM Studio:
-1. Go to "Local Server" tab
-2. Click "Start Server"
-3. Verify it's running on `http://localhost:1234`
+4. **Run Crush**: That's it! Just run `crush` and the reasoning layer will:
+   - Auto-detect your loaded model
+   - Analyze your requests and create tasks
+   - Track progress automatically
+   - Update task statuses based on work completed
 
-### 4. Copy Configuration
+### Custom Configuration (Optional)
+
+If you want to customize the defaults, you can create a config file:
 
 ```bash
 # Copy the example config to your project
 cp examples/configs/lm_studio.json .crush/config.json
-
-# Or create a project-specific config
-mkdir -p .crush
-cp examples/configs/lm_studio.json .crush/config.json
 ```
 
-### 5. Run Crush
+**Default Settings (when no config is present):**
+- Enabled: `true`
+- Base URL: `http://localhost:1234`
+- Model Preference: `["glm-4.6", "qwen3-next-80b", "qwen3-8b"]`
+- Fallback Model: `qwen3-8b`
+- Auto Create Tasks: `true`
+- Auto Update Tasks: `true`
 
-```bash
-crush
+**To Disable:**
+```json
+{
+  "reasoning": {
+    "enabled": false
+  }
+}
 ```
-
-The reasoning layer will:
-- Auto-detect your loaded model
-- Analyze your requests and create tasks
-- Track progress automatically
-- Update task statuses based on work completed
 
 ## Example Session
 

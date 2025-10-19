@@ -178,22 +178,46 @@ func NewAgent(
 		return nil, err
 	}
 
-	// Initialize reasoning layer if configured
+	// Initialize reasoning layer with sensible defaults
 	var reasoningLayer *reasoning.Layer
-	if cfg.Reasoning != nil && cfg.Reasoning.Enabled {
-		slog.Info("Initializing reasoning layer", "agent", agentCfg.ID)
+
+	// Use config values if provided, otherwise use defaults
+	reasoningEnabled := true
+	reasoningBaseURL := "http://localhost:1234"
+	reasoningModelPref := []string{"glm-4.6", "qwen3-next-80b", "qwen3-8b"}
+	reasoningFallback := "qwen3-8b"
+	reasoningAutoCreate := true
+	reasoningAutoUpdate := true
+
+	if cfg.Reasoning != nil {
+		reasoningEnabled = cfg.Reasoning.Enabled
+		if cfg.Reasoning.BaseURL != "" {
+			reasoningBaseURL = cfg.Reasoning.BaseURL
+		}
+		if len(cfg.Reasoning.ModelPreference) > 0 {
+			reasoningModelPref = cfg.Reasoning.ModelPreference
+		}
+		if cfg.Reasoning.FallbackModel != "" {
+			reasoningFallback = cfg.Reasoning.FallbackModel
+		}
+		reasoningAutoCreate = cfg.Reasoning.AutoCreate
+		reasoningAutoUpdate = cfg.Reasoning.AutoUpdate
+	}
+
+	if reasoningEnabled {
+		slog.Info("Initializing reasoning layer", "agent", agentCfg.ID, "base_url", reasoningBaseURL)
 		reasoningLayer, err = reasoning.New(ctx, reasoning.Config{
 			Provider:        agentProvider,
-			BaseURL:         cfg.Reasoning.BaseURL,
-			ModelPreference: cfg.Reasoning.ModelPreference,
-			FallbackModel:   cfg.Reasoning.FallbackModel,
+			BaseURL:         reasoningBaseURL,
+			ModelPreference: reasoningModelPref,
+			FallbackModel:   reasoningFallback,
 			DataDir:         cfg.WorkingDir() + "/" + cfg.Options.DataDirectory,
-			AutoCreate:      cfg.Reasoning.AutoCreate,
-			AutoUpdate:      cfg.Reasoning.AutoUpdate,
-			Enabled:         cfg.Reasoning.Enabled,
+			AutoCreate:      reasoningAutoCreate,
+			AutoUpdate:      reasoningAutoUpdate,
+			Enabled:         true,
 		})
 		if err != nil {
-			slog.Warn("Failed to initialize reasoning layer, continuing without it", "error", err)
+			slog.Warn("Failed to initialize reasoning layer, continuing without it", "error", err, "tip", "Make sure LM Studio is running at "+reasoningBaseURL)
 			reasoningLayer = nil
 		}
 	}
