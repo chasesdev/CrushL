@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/format"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/llm/agent"
+	"github.com/charmbracelet/crush/internal/llm/reasoning"
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/message"
@@ -207,6 +208,13 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, quiet bool
 
 func (app *App) UpdateAgentModel() error {
 	return app.CoderAgent.UpdateModel()
+}
+
+func (app *App) GetSessionTasks(sessionID string) ([]reasoning.Task, error) {
+	if app.CoderAgent == nil {
+		return []reasoning.Task{}, nil
+	}
+	return app.CoderAgent.GetTasks(sessionID)
 }
 
 func (app *App) setupEvents() {

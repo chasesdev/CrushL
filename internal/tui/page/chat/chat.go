@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/v2/help"
@@ -13,6 +14,8 @@ import (
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/llm/agent"
+	llmreasoning "github.com/charmbracelet/crush/internal/llm/reasoning"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
@@ -24,6 +27,7 @@ import (
 	"github.com/charmbracelet/crush/internal/tui/components/chat/messages"
 	"github.com/charmbracelet/crush/internal/tui/components/chat/sidebar"
 	"github.com/charmbracelet/crush/internal/tui/components/chat/splash"
+	"github.com/charmbracelet/crush/internal/tui/components/chat/tasks"
 	"github.com/charmbracelet/crush/internal/tui/components/completions"
 	"github.com/charmbracelet/crush/internal/tui/components/core"
 	"github.com/charmbracelet/crush/internal/tui/components/core/layout"
@@ -106,15 +110,17 @@ type chatPage struct {
 	header  header.Header
 	sidebar sidebar.Sidebar
 	chat    chat.MessageListCmp
+	tasks   tasks.TasksCmp
 	editor  editor.Editor
 	splash  splash.Splash
 
 	// Simple state flags
-	showingDetails   bool
-	isCanceling      bool
-	splashFullScreen bool
-	isOnboarding     bool
-	isProjectInit    bool
+	showingDetails      bool
+	isCanceling         bool
+	splashFullScreen    bool
+	isOnboarding        bool
+	isProjectInit       bool
+	hasPendingApproval  bool
 }
 
 func New(app *app.App) ChatPage {
@@ -124,6 +130,7 @@ func New(app *app.App) ChatPage {
 		header:      header.New(app.LSPClients),
 		sidebar:     sidebar.New(app.History, app.LSPClients, false),
 		chat:        chat.New(app),
+		tasks:       tasks.New(),
 		editor:      editor.New(app),
 		splash:      splash.New(),
 		focusedPane: PanelTypeSplash,
@@ -158,6 +165,7 @@ func (p *chatPage) Init() tea.Cmd {
 		p.header.Init(),
 		p.sidebar.Init(),
 		p.chat.Init(),
+		p.tasks.Init(),
 		p.editor.Init(),
 		p.splash.Init(),
 	)
@@ -284,6 +292,10 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		u, cmd = p.chat.Update(msg)
 		p.chat = u.(chat.MessageListCmp)
 		cmds = append(cmds, cmd)
+		// Clear tasks when session is cleared
+		u, cmd = p.tasks.Update(tasks.SetTasksMsg{Tasks: []llmreasoning.Task{}})
+		p.tasks = u.(tasks.TasksCmp)
+		cmds = append(cmds, cmd)
 		return p, tea.Batch(cmds...)
 	case filepicker.FilePickedMsg,
 		completions.CompletionsClosedMsg,
@@ -300,8 +312,21 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 		return p, tea.Batch(cmds...)
-	case pubsub.Event[message.Message],
-		anim.StepMsg,
+	case pubsub.Event[message.Message]:
+		if p.focusedPane == PanelTypeSplash {
+			u, cmd := p.splash.Update(msg)
+			p.splash = u.(splash.Splash)
+			cmds = append(cmds, cmd)
+		} else {
+			u, cmd := p.chat.Update(msg)
+			p.chat = u.(chat.MessageListCmp)
+			cmds = append(cmds, cmd)
+			// Refresh tasks after message updates
+			cmds = append(cmds, p.refreshTasks())
+		}
+
+		return p, tea.Batch(cmds...)
+	case anim.StepMsg,
 		spinner.TickMsg:
 		if p.focusedPane == PanelTypeSplash {
 			u, cmd := p.splash.Update(msg)
@@ -323,6 +348,28 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		u, cmd := p.sidebar.Update(msg)
 		p.sidebar = u.(sidebar.Sidebar)
 		cmds = append(cmds, cmd)
+		return p, tea.Batch(cmds...)
+	case pubsub.Event[agent.AgentEvent]:
+		// Handle agent events, specifically task updates and approvals
+		if msg.Payload.SessionID == p.session.ID {
+			switch msg.Payload.Type {
+			case agent.AgentEventTypeTasks:
+				u, cmd := p.tasks.Update(tasks.SetTasksMsg{Tasks: msg.Payload.Tasks})
+				p.tasks = u.(tasks.TasksCmp)
+				cmds = append(cmds, cmd)
+				// Trigger re-layout since tasks height may have changed
+				cmds = append(cmds, p.SetSize(p.width, p.height))
+
+			case agent.AgentEventTypeTaskApproval:
+				// Show approval prompt to user
+				if msg.Payload.Approval != nil {
+					p.hasPendingApproval = true
+					prompt := llmreasoning.FormatApprovalPrompt(msg.Payload.Approval.Tasks, msg.Payload.Approval.Source)
+					// Send as a system notification
+					cmds = append(cmds, util.ReportInfo(prompt))
+				}
+			}
+		}
 		return p, tea.Batch(cmds...)
 	case pubsub.Event[permission.PermissionNotification]:
 		u, cmd := p.chat.Update(msg)
@@ -354,6 +401,13 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.isProjectInit = false
 		p.focusedPane = PanelTypeEditor
 		return p, p.SetSize(p.width, p.height)
+	case tasks.SetTasksMsg:
+		u, cmd := p.tasks.Update(msg)
+		p.tasks = u.(tasks.TasksCmp)
+		cmds = append(cmds, cmd)
+		// Trigger a re-layout since tasks height may have changed
+		cmds = append(cmds, p.SetSize(p.width, p.height))
+		return p, tea.Batch(cmds...)
 	case commands.NewSessionsMsg:
 		if p.app.CoderAgent.IsBusy() {
 			return p, util.ReportWarn("Agent is busy, please wait before starting a new session...")
@@ -393,6 +447,34 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, p.keyMap.Details):
 			p.toggleDetails()
 			return p, nil
+		case key.Matches(msg, p.keyMap.ToggleTasks):
+			// Toggle tasks visibility
+			u, cmd := p.tasks.Update(tasks.ToggleVisibilityMsg{})
+			p.tasks = u.(tasks.TasksCmp)
+			cmds = append(cmds, cmd)
+			// Re-layout to adjust for height change
+			cmds = append(cmds, p.SetSize(p.width, p.height))
+			return p, tea.Batch(cmds...)
+		case key.Matches(msg, p.keyMap.ApproveTask):
+			if p.hasPendingApproval {
+				p.hasPendingApproval = false
+				if err := p.app.CoderAgent.ApproveTasks(p.session.ID, true); err != nil {
+					cmds = append(cmds, util.ReportError(err))
+				} else {
+					cmds = append(cmds, util.ReportInfo("✅ Tasks approved and created!"))
+				}
+				return p, tea.Batch(cmds...)
+			}
+		case key.Matches(msg, p.keyMap.RejectTask):
+			if p.hasPendingApproval {
+				p.hasPendingApproval = false
+				if err := p.app.CoderAgent.ApproveTasks(p.session.ID, false); err != nil {
+					cmds = append(cmds, util.ReportError(err))
+				} else {
+					cmds = append(cmds, util.ReportInfo("❌ Tasks rejected"))
+				}
+				return p, tea.Batch(cmds...)
+			}
 		}
 
 		switch p.focusedPane {
@@ -465,6 +547,7 @@ func (p *chatPage) View() string {
 		}
 	} else {
 		messagesView := p.chat.View()
+		tasksView := p.tasks.View()
 		editorView := p.editor.View()
 		if p.compact {
 			headerView := p.header.View()
@@ -472,6 +555,7 @@ func (p *chatPage) View() string {
 				lipgloss.Left,
 				headerView,
 				messagesView,
+				tasksView,
 				editorView,
 			)
 		} else {
@@ -484,6 +568,7 @@ func (p *chatPage) View() string {
 			chatView = lipgloss.JoinVertical(
 				lipgloss.Left,
 				messages,
+				tasksView,
 				p.editor.View(),
 			)
 		}
@@ -638,16 +723,22 @@ func (p *chatPage) SetSize(width, height int) tea.Cmd {
 			cmds = append(cmds, p.editor.SetPosition(0, height-EditorHeight))
 		}
 	} else {
+		// Calculate tasks height first
+		tasksHeight := p.tasks.GetHeight()
+		cmds = append(cmds, p.tasks.SetSize(width, tasksHeight))
+
 		if p.compact {
-			cmds = append(cmds, p.chat.SetSize(width, height-EditorHeight-HeaderHeight))
+			chatHeight := height - EditorHeight - HeaderHeight - tasksHeight
+			cmds = append(cmds, p.chat.SetSize(width, chatHeight))
 			p.detailsWidth = width - DetailsPositioning
 			cmds = append(cmds, p.sidebar.SetSize(p.detailsWidth-LeftRightBorders, p.detailsHeight-TopBottomBorders))
 			cmds = append(cmds, p.editor.SetSize(width, EditorHeight))
 			cmds = append(cmds, p.header.SetWidth(width-BorderWidth))
 		} else {
-			cmds = append(cmds, p.chat.SetSize(width-SideBarWidth, height-EditorHeight))
+			chatHeight := height - EditorHeight - tasksHeight
+			cmds = append(cmds, p.chat.SetSize(width-SideBarWidth, chatHeight))
 			cmds = append(cmds, p.editor.SetSize(width, EditorHeight))
-			cmds = append(cmds, p.sidebar.SetSize(SideBarWidth, height-EditorHeight))
+			cmds = append(cmds, p.sidebar.SetSize(SideBarWidth, chatHeight))
 		}
 		cmds = append(cmds, p.editor.SetPosition(0, height-EditorHeight))
 	}
@@ -683,8 +774,149 @@ func (p *chatPage) setSession(session session.Session) tea.Cmd {
 	cmds = append(cmds, p.sidebar.SetSession(session))
 	cmds = append(cmds, p.header.SetSession(session))
 	cmds = append(cmds, p.editor.SetSession(session))
+	cmds = append(cmds, p.refreshTasks())
 
 	return tea.Sequence(cmds...)
+}
+
+func (p *chatPage) refreshTasks() tea.Cmd {
+	return func() tea.Msg {
+		if p.session.ID == "" {
+			return tasks.SetTasksMsg{Tasks: []llmreasoning.Task{}}
+		}
+
+		sessionTasks, err := p.app.GetSessionTasks(p.session.ID)
+		if err != nil {
+			return nil
+		}
+
+		return tasks.SetTasksMsg{Tasks: sessionTasks}
+	}
+}
+
+// isTaskListCommand checks if the user is asking to list/show tasks
+func (p *chatPage) isTaskListCommand(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+
+	// Match common task listing phrases
+	listCommands := []string{
+		"list tasks",
+		"show tasks",
+		"view tasks",
+		"what are my tasks",
+		"what tasks do i have",
+		"display tasks",
+		"get tasks",
+		"show my tasks",
+		"list my tasks",
+		"what are the tasks",
+		"show me the tasks",
+		"show me my tasks",
+	}
+
+	for _, cmd := range listCommands {
+		if lower == cmd || lower == cmd+"?" || lower == cmd+"." {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleTaskListCommand responds to task listing requests without using LLM
+func (p *chatPage) handleTaskListCommand(sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		// Get tasks from the app
+		sessionTasks, err := p.app.GetSessionTasks(sessionID)
+		if err != nil {
+			return util.ReportError(fmt.Errorf("failed to get tasks: %w", err))
+		}
+
+		// Format task list as a response
+		var response strings.Builder
+		if len(sessionTasks) == 0 {
+			response.WriteString("You have no tasks for this session.\n\n")
+			response.WriteString("💡 Tip: Press Ctrl+T to toggle the task view at any time.")
+		} else {
+			response.WriteString(fmt.Sprintf("📋 You have %d task", len(sessionTasks)))
+			if len(sessionTasks) > 1 {
+				response.WriteString("s")
+			}
+			response.WriteString(":\n\n")
+
+			// Group tasks by status
+			pending := []llmreasoning.Task{}
+			inProgress := []llmreasoning.Task{}
+			completed := []llmreasoning.Task{}
+			blocked := []llmreasoning.Task{}
+
+			for _, task := range sessionTasks {
+				switch task.Status {
+				case "pending":
+					pending = append(pending, task)
+				case "in-progress":
+					inProgress = append(inProgress, task)
+				case "completed":
+					completed = append(completed, task)
+				case "blocked":
+					blocked = append(blocked, task)
+				}
+			}
+
+			// Show in-progress first
+			if len(inProgress) > 0 {
+				response.WriteString("🔄 In Progress:\n")
+				for _, task := range inProgress {
+					priority := ""
+					if task.Priority == "high" {
+						priority = " [high priority]"
+					} else if task.Priority == "low" {
+						priority = " [low priority]"
+					}
+					response.WriteString(fmt.Sprintf("  → %s%s\n", task.Description, priority))
+				}
+				response.WriteString("\n")
+			}
+
+			// Then pending
+			if len(pending) > 0 {
+				response.WriteString("☐ Pending:\n")
+				for _, task := range pending {
+					priority := ""
+					if task.Priority == "high" {
+						priority = " [high priority]"
+					} else if task.Priority == "low" {
+						priority = " [low priority]"
+					}
+					response.WriteString(fmt.Sprintf("  ☐ %s%s\n", task.Description, priority))
+				}
+				response.WriteString("\n")
+			}
+
+			// Then blocked
+			if len(blocked) > 0 {
+				response.WriteString("⊗ Blocked:\n")
+				for _, task := range blocked {
+					response.WriteString(fmt.Sprintf("  ⊗ %s\n", task.Description))
+				}
+				response.WriteString("\n")
+			}
+
+			// Finally completed
+			if len(completed) > 0 {
+				response.WriteString("✓ Completed:\n")
+				for _, task := range completed {
+					response.WriteString(fmt.Sprintf("  ✓ %s\n", task.Description))
+				}
+				response.WriteString("\n")
+			}
+
+			response.WriteString("💡 Tip: Press Ctrl+T to toggle the task view at any time.")
+		}
+
+		// Return as an info message that will be displayed to the user
+		return util.ReportInfo(response.String())
+	}
 }
 
 func (p *chatPage) changeFocus() {
@@ -746,6 +978,12 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 		session = newSession
 		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(session)))
 	}
+
+	// Intercept task listing commands before sending to LLM
+	if p.isTaskListCommand(text) {
+		return p.handleTaskListCommand(session.ID)
+	}
+
 	if p.app.CoderAgent == nil {
 		return util.ReportError(fmt.Errorf("coder agent is not initialized"))
 	}

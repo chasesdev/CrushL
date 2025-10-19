@@ -156,6 +156,16 @@ type Attribution struct {
 	GeneratedWith bool `json:"generated_with,omitempty" jsonschema:"description=Add Generated with Crush line to commit messages and issues and PRs,default=true"`
 }
 
+type ReasoningConfig struct {
+	Enabled         bool     `json:"enabled" jsonschema:"description=Enable reasoning layer for automatic task management,default=true"`
+	Provider        string   `json:"provider" jsonschema:"description=Provider ID to use for reasoning layer,example=lmstudio"`
+	BaseURL         string   `json:"base_url" jsonschema:"description=Base URL for the reasoning provider API,format=uri,example=http://localhost:1234"`
+	ModelPreference []string `json:"model_preference,omitempty" jsonschema:"description=Ordered list of preferred models for reasoning,example=glm-4.6,example=qwen3-next-80b,example=qwen3-8b"`
+	FallbackModel   string   `json:"fallback_model" jsonschema:"description=Fallback model if preferred models are unavailable,example=qwen3-8b"`
+	AutoCreate      bool     `json:"auto_create_tasks" jsonschema:"description=Automatically create tasks from user requests,default=true"`
+	AutoUpdate      bool     `json:"auto_update_tasks" jsonschema:"description=Automatically update task status from LLM responses,default=true"`
+}
+
 type Options struct {
 	ContextPaths              []string     `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
 	TUI                       *TUIOptions  `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
@@ -289,6 +299,8 @@ type Config struct {
 	Options *Options `json:"options,omitempty" jsonschema:"description=General application options"`
 
 	Permissions *Permissions `json:"permissions,omitempty" jsonschema:"description=Permission settings for tool usage"`
+
+	Reasoning *ReasoningConfig `json:"reasoning,omitempty" jsonschema:"description=Reasoning layer configuration for automatic task management"`
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 

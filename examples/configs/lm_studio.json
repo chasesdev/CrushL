@@ -1,0 +1,62 @@
+{
+  "$schema": "https://charm.land/crush.json",
+  "providers": {
+    "lmstudio": {
+      "name": "LM Studio",
+      "base_url": "http://localhost:1234/v1/",
+      "type": "openai",
+      "models": [
+        {
+          "name": "Qwen3 8B (Local)",
+          "id": "qwen3-8b",
+          "context_window": 8192,
+          "default_max_tokens": 4096
+        },
+        {
+          "name": "Qwen2.5 Coder 8B (Local)",
+          "id": "qwen2.5-coder-8b",
+          "context_window": 8192,
+          "default_max_tokens": 4096
+        }
+      ]
+    }
+  },
+  "models": {
+    "large": {
+      "model": "qwen3-8b",
+      "provider": "lmstudio"
+    },
+    "small": {
+      "model": "qwen3-8b",
+      "provider": "lmstudio"
+    }
+  },
+  "reasoning": {
+    "enabled": true,
+    "provider": "lmstudio",
+    "base_url": "http://localhost:1234",
+    "model_preference": [
+      "glm-4.6",
+      "qwen3-next-80b",
+      "qwen3-8b"
+    ],
+    "fallback_model": "qwen3-8b",
+    "auto_create_tasks": true,
+    "auto_update_tasks": true
+  },
+  "options": {
+    "debug": false,
+    "debug_lsp": false,
+    "data_directory": ".crush"
+  },
+  "permissions": {
+    "allowed_tools": [
+      "view",
+      "ls",
+      "grep",
+      "edit",
+      "bash",
+      "write"
+    ]
+  }
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/llm/prompt"
 	"github.com/charmbracelet/crush/internal/llm/provider"
+	"github.com/charmbracelet/crush/internal/llm/reasoning"
 	"github.com/charmbracelet/crush/internal/llm/tools"
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
@@ -31,9 +32,11 @@ import (
 type AgentEventType string
 
 const (
-	AgentEventTypeError     AgentEventType = "error"
-	AgentEventTypeResponse  AgentEventType = "response"
-	AgentEventTypeSummarize AgentEventType = "summarize"
+	AgentEventTypeError        AgentEventType = "error"
+	AgentEventTypeResponse     AgentEventType = "response"
+	AgentEventTypeSummarize    AgentEventType = "summarize"
+	AgentEventTypeTasks        AgentEventType = "tasks"
+	AgentEventTypeTaskApproval AgentEventType = "task_approval"
 )
 
 type AgentEvent struct {
@@ -45,6 +48,12 @@ type AgentEvent struct {
 	SessionID string
 	Progress  string
 	Done      bool
+
+	// When tasks are updated
+	Tasks []reasoning.Task
+
+	// When task approval is needed
+	Approval *reasoning.PendingTaskApproval
 }
 
 type Service interface {
@@ -59,6 +68,8 @@ type Service interface {
 	UpdateModel() error
 	QueuedPrompts(sessionID string) int
 	ClearQueue(sessionID string)
+	GetTasks(sessionID string) ([]reasoning.Task, error)
+	ApproveTasks(sessionID string, approved bool) error
 }
 
 type agent struct {
@@ -81,6 +92,8 @@ type agent struct {
 	titleProvider       provider.Provider
 	summarizeProvider   provider.Provider
 	summarizeProviderID string
+
+	reasoningLayer *reasoning.Layer
 
 	activeRequests *csync.Map[string, context.CancelFunc]
 	promptQueue    *csync.Map[string, []string]
@@ -175,6 +188,56 @@ func NewAgent(
 		return nil, err
 	}
 
+	// Initialize reasoning layer with sensible defaults
+	var reasoningLayer *reasoning.Layer
+
+	// Use config values if provided, otherwise use defaults
+	reasoningEnabled := true
+	reasoningBaseURL := "http://localhost:1234"
+	reasoningModelPref := []string{"glm-4.6", "qwen3-next-80b", "qwen3-8b"}
+	reasoningFallback := "qwen3-8b"
+	reasoningAutoCreate := true
+	reasoningAutoUpdate := true
+
+	if cfg.Reasoning != nil {
+		// Only override enabled if explicitly set to false
+		if !cfg.Reasoning.Enabled {
+			reasoningEnabled = false
+		}
+		if cfg.Reasoning.BaseURL != "" {
+			reasoningBaseURL = cfg.Reasoning.BaseURL
+		}
+		if len(cfg.Reasoning.ModelPreference) > 0 {
+			reasoningModelPref = cfg.Reasoning.ModelPreference
+		}
+		if cfg.Reasoning.FallbackModel != "" {
+			reasoningFallback = cfg.Reasoning.FallbackModel
+		}
+		// Use config values if explicitly set, otherwise keep defaults (true)
+		if cfg.Reasoning.AutoCreate || cfg.Reasoning.AutoUpdate {
+			reasoningAutoCreate = cfg.Reasoning.AutoCreate
+			reasoningAutoUpdate = cfg.Reasoning.AutoUpdate
+		}
+	}
+
+	if reasoningEnabled {
+		slog.Info("Initializing reasoning layer", "agent", agentCfg.ID, "base_url", reasoningBaseURL)
+		reasoningLayer, err = reasoning.New(ctx, reasoning.Config{
+			Provider:        agentProvider,
+			BaseURL:         reasoningBaseURL,
+			ModelPreference: reasoningModelPref,
+			FallbackModel:   reasoningFallback,
+			DataDir:         cfg.WorkingDir() + "/" + cfg.Options.DataDirectory,
+			AutoCreate:      reasoningAutoCreate,
+			AutoUpdate:      reasoningAutoUpdate,
+			Enabled:         true,
+		})
+		if err != nil {
+			slog.Warn("Failed to initialize reasoning layer, continuing without it", "error", err, "tip", "Make sure LM Studio is running at "+reasoningBaseURL)
+			reasoningLayer = nil
+		}
+	}
+
 	baseToolsFn := func() map[string]tools.BaseTool {
 		slog.Debug("Initializing agent base tools", "agent", agentCfg.ID)
 		defer func() {
@@ -224,6 +287,7 @@ func NewAgent(
 		titleProvider:       titleProvider,
 		summarizeProvider:   summarizeProvider,
 		summarizeProviderID: string(providerCfg.ID),
+		reasoningLayer:      reasoningLayer,
 		agentToolFn:         agentToolFn,
 		activeRequests:      csync.NewMap[string, context.CancelFunc](),
 		mcpTools:            csync.NewLazyMap(mcpToolsFn),
@@ -435,6 +499,39 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if err != nil {
 		return a.err(fmt.Errorf("failed to create user message: %w", err))
 	}
+
+	// Reasoning layer pre-processing: analyze user request and create tasks (async)
+	if a.reasoningLayer != nil && a.reasoningLayer.IsEnabled() {
+		go func() {
+			// Use background context to avoid cancellation
+			bgCtx := context.Background()
+			approval, err := a.reasoningLayer.AnalyzeUserRequest(bgCtx, sessionID, userMsg)
+			if err != nil {
+				slog.Warn("Reasoning layer failed to analyze user request", "error", err)
+				return
+			}
+
+			// If approval is pending, emit approval request event
+			if approval != nil {
+				a.Publish(pubsub.CreatedEvent, AgentEvent{
+					Type:      AgentEventTypeTaskApproval,
+					SessionID: sessionID,
+					Approval:  approval,
+				})
+			} else {
+				// Tasks auto-created or no tasks found, emit regular task update
+				tasks, err := a.reasoningLayer.GetTasks(sessionID)
+				if err == nil && len(tasks) > 0 {
+					a.Publish(pubsub.CreatedEvent, AgentEvent{
+						Type:      AgentEventTypeTasks,
+						SessionID: sessionID,
+						Tasks:     tasks,
+					})
+				}
+			}
+		}()
+	}
+
 	// Append the new user message to the conversation history.
 	msgHistory := append(msgs, userMsg)
 
@@ -498,6 +595,24 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			_ = a.messages.Update(context.Background(), agentMessage)
 			return a.err(ErrRequestCancelled)
 		}
+
+		// Reasoning layer post-processing: update tasks based on response
+		if a.reasoningLayer != nil && a.reasoningLayer.IsEnabled() {
+			if err := a.reasoningLayer.UpdateTasksFromResponse(ctx, sessionID, agentMessage); err != nil {
+				slog.Warn("Reasoning layer failed to update tasks from response", "error", err)
+			} else {
+				// Emit task update event
+				tasks, err := a.reasoningLayer.GetTasks(sessionID)
+				if err == nil {
+					a.Publish(pubsub.CreatedEvent, AgentEvent{
+						Type:      AgentEventTypeTasks,
+						SessionID: sessionID,
+						Tasks:     tasks,
+					})
+				}
+			}
+		}
+
 		return AgentEvent{
 			Type:    AgentEventTypeResponse,
 			Message: agentMessage,
@@ -1083,6 +1198,38 @@ func (a *agent) UpdateModel() error {
 		}
 		a.summarizeProvider = newSummarizeProvider
 		a.summarizeProviderID = string(largeModelProviderCfg.ID)
+	}
+
+	return nil
+}
+
+func (a *agent) GetTasks(sessionID string) ([]reasoning.Task, error) {
+	if a.reasoningLayer == nil || !a.reasoningLayer.IsEnabled() {
+		return []reasoning.Task{}, nil
+	}
+	return a.reasoningLayer.GetTasks(sessionID)
+}
+
+func (a *agent) ApproveTasks(sessionID string, approved bool) error {
+	if a.reasoningLayer == nil || !a.reasoningLayer.IsEnabled() {
+		return fmt.Errorf("reasoning layer not enabled")
+	}
+
+	err := a.reasoningLayer.ApproveTasks(sessionID, approved)
+	if err != nil {
+		return err
+	}
+
+	// Emit task update event after approval
+	if approved {
+		tasks, err := a.reasoningLayer.GetTasks(sessionID)
+		if err == nil {
+			a.Publish(pubsub.CreatedEvent, AgentEvent{
+				Type:      AgentEventTypeTasks,
+				SessionID: sessionID,
+				Tasks:     tasks,
+			})
+		}
 	}
 
 	return nil
