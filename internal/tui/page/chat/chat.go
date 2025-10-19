@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/v2/help"
@@ -793,6 +794,131 @@ func (p *chatPage) refreshTasks() tea.Cmd {
 	}
 }
 
+// isTaskListCommand checks if the user is asking to list/show tasks
+func (p *chatPage) isTaskListCommand(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+
+	// Match common task listing phrases
+	listCommands := []string{
+		"list tasks",
+		"show tasks",
+		"view tasks",
+		"what are my tasks",
+		"what tasks do i have",
+		"display tasks",
+		"get tasks",
+		"show my tasks",
+		"list my tasks",
+		"what are the tasks",
+		"show me the tasks",
+		"show me my tasks",
+	}
+
+	for _, cmd := range listCommands {
+		if lower == cmd || lower == cmd+"?" || lower == cmd+"." {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleTaskListCommand responds to task listing requests without using LLM
+func (p *chatPage) handleTaskListCommand(sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		// Get tasks from the app
+		sessionTasks, err := p.app.GetSessionTasks(sessionID)
+		if err != nil {
+			return util.ReportError(fmt.Errorf("failed to get tasks: %w", err))
+		}
+
+		// Format task list as a response
+		var response strings.Builder
+		if len(sessionTasks) == 0 {
+			response.WriteString("You have no tasks for this session.\n\n")
+			response.WriteString("💡 Tip: Press Ctrl+T to toggle the task view at any time.")
+		} else {
+			response.WriteString(fmt.Sprintf("📋 You have %d task", len(sessionTasks)))
+			if len(sessionTasks) > 1 {
+				response.WriteString("s")
+			}
+			response.WriteString(":\n\n")
+
+			// Group tasks by status
+			pending := []llmreasoning.Task{}
+			inProgress := []llmreasoning.Task{}
+			completed := []llmreasoning.Task{}
+			blocked := []llmreasoning.Task{}
+
+			for _, task := range sessionTasks {
+				switch task.Status {
+				case "pending":
+					pending = append(pending, task)
+				case "in-progress":
+					inProgress = append(inProgress, task)
+				case "completed":
+					completed = append(completed, task)
+				case "blocked":
+					blocked = append(blocked, task)
+				}
+			}
+
+			// Show in-progress first
+			if len(inProgress) > 0 {
+				response.WriteString("🔄 In Progress:\n")
+				for _, task := range inProgress {
+					priority := ""
+					if task.Priority == "high" {
+						priority = " [high priority]"
+					} else if task.Priority == "low" {
+						priority = " [low priority]"
+					}
+					response.WriteString(fmt.Sprintf("  → %s%s\n", task.Description, priority))
+				}
+				response.WriteString("\n")
+			}
+
+			// Then pending
+			if len(pending) > 0 {
+				response.WriteString("☐ Pending:\n")
+				for _, task := range pending {
+					priority := ""
+					if task.Priority == "high" {
+						priority = " [high priority]"
+					} else if task.Priority == "low" {
+						priority = " [low priority]"
+					}
+					response.WriteString(fmt.Sprintf("  ☐ %s%s\n", task.Description, priority))
+				}
+				response.WriteString("\n")
+			}
+
+			// Then blocked
+			if len(blocked) > 0 {
+				response.WriteString("⊗ Blocked:\n")
+				for _, task := range blocked {
+					response.WriteString(fmt.Sprintf("  ⊗ %s\n", task.Description))
+				}
+				response.WriteString("\n")
+			}
+
+			// Finally completed
+			if len(completed) > 0 {
+				response.WriteString("✓ Completed:\n")
+				for _, task := range completed {
+					response.WriteString(fmt.Sprintf("  ✓ %s\n", task.Description))
+				}
+				response.WriteString("\n")
+			}
+
+			response.WriteString("💡 Tip: Press Ctrl+T to toggle the task view at any time.")
+		}
+
+		// Return as an info message that will be displayed to the user
+		return util.ReportInfo(response.String())
+	}
+}
+
 func (p *chatPage) changeFocus() {
 	if p.session.ID == "" {
 		return
@@ -852,6 +978,12 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 		session = newSession
 		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(session)))
 	}
+
+	// Intercept task listing commands before sending to LLM
+	if p.isTaskListCommand(text) {
+		return p.handleTaskListCommand(session.ID)
+	}
+
 	if p.app.CoderAgent == nil {
 		return util.ReportError(fmt.Errorf("coder agent is not initialized"))
 	}
