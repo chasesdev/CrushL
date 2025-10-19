@@ -21,16 +21,42 @@
       ]
     }
   },
+  "models": {
+    "large": {
+      "model": "qwen3-8b",
+      "provider": "lmstudio"
+    },
+    "small": {
+      "model": "qwen3-8b",
+      "provider": "lmstudio"
+    }
+  },
+  "reasoning": {
+    "enabled": true,
+    "provider": "lmstudio",
+    "base_url": "http://localhost:1234",
+    "model_preference": [
+      "glm-4.6",
+      "qwen3-next-80b",
+      "qwen3-8b"
+    ],
+    "fallback_model": "qwen3-8b",
+    "auto_create_tasks": true,
+    "auto_update_tasks": true
+  },
   "options": {
     "debug": false,
-    "debug_lsp": false
+    "debug_lsp": false,
+    "data_directory": ".crush"
   },
   "permissions": {
     "allowed_tools": [
       "view",
       "ls",
       "grep",
-      "edit"
+      "edit",
+      "bash",
+      "write"
     ]
   }
 }

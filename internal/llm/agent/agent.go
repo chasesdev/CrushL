@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/llm/prompt"
 	"github.com/charmbracelet/crush/internal/llm/provider"
+	"github.com/charmbracelet/crush/internal/llm/reasoning"
 	"github.com/charmbracelet/crush/internal/llm/tools"
 	"github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/lsp"
@@ -81,6 +82,8 @@ type agent struct {
 	titleProvider       provider.Provider
 	summarizeProvider   provider.Provider
 	summarizeProviderID string
+
+	reasoningLayer *reasoning.Layer
 
 	activeRequests *csync.Map[string, context.CancelFunc]
 	promptQueue    *csync.Map[string, []string]
@@ -175,6 +178,26 @@ func NewAgent(
 		return nil, err
 	}
 
+	// Initialize reasoning layer if configured
+	var reasoningLayer *reasoning.Layer
+	if cfg.Reasoning != nil && cfg.Reasoning.Enabled {
+		slog.Info("Initializing reasoning layer", "agent", agentCfg.ID)
+		reasoningLayer, err = reasoning.New(ctx, reasoning.Config{
+			Provider:        agentProvider,
+			BaseURL:         cfg.Reasoning.BaseURL,
+			ModelPreference: cfg.Reasoning.ModelPreference,
+			FallbackModel:   cfg.Reasoning.FallbackModel,
+			DataDir:         cfg.WorkingDir() + "/" + cfg.Options.DataDirectory,
+			AutoCreate:      cfg.Reasoning.AutoCreate,
+			AutoUpdate:      cfg.Reasoning.AutoUpdate,
+			Enabled:         cfg.Reasoning.Enabled,
+		})
+		if err != nil {
+			slog.Warn("Failed to initialize reasoning layer, continuing without it", "error", err)
+			reasoningLayer = nil
+		}
+	}
+
 	baseToolsFn := func() map[string]tools.BaseTool {
 		slog.Debug("Initializing agent base tools", "agent", agentCfg.ID)
 		defer func() {
@@ -224,6 +247,7 @@ func NewAgent(
 		titleProvider:       titleProvider,
 		summarizeProvider:   summarizeProvider,
 		summarizeProviderID: string(providerCfg.ID),
+		reasoningLayer:      reasoningLayer,
 		agentToolFn:         agentToolFn,
 		activeRequests:      csync.NewMap[string, context.CancelFunc](),
 		mcpTools:            csync.NewLazyMap(mcpToolsFn),
@@ -435,6 +459,14 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if err != nil {
 		return a.err(fmt.Errorf("failed to create user message: %w", err))
 	}
+
+	// Reasoning layer pre-processing: analyze user request and create tasks
+	if a.reasoningLayer != nil && a.reasoningLayer.IsEnabled() {
+		if err := a.reasoningLayer.AnalyzeUserRequest(ctx, sessionID, userMsg); err != nil {
+			slog.Warn("Reasoning layer failed to analyze user request", "error", err)
+		}
+	}
+
 	// Append the new user message to the conversation history.
 	msgHistory := append(msgs, userMsg)
 
@@ -498,6 +530,14 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			_ = a.messages.Update(context.Background(), agentMessage)
 			return a.err(ErrRequestCancelled)
 		}
+
+		// Reasoning layer post-processing: update tasks based on response
+		if a.reasoningLayer != nil && a.reasoningLayer.IsEnabled() {
+			if err := a.reasoningLayer.UpdateTasksFromResponse(ctx, sessionID, agentMessage); err != nil {
+				slog.Warn("Reasoning layer failed to update tasks from response", "error", err)
+			}
+		}
+
 		return AgentEvent{
 			Type:    AgentEventTypeResponse,
 			Message: agentMessage,
