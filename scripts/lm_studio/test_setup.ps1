@@ -10,10 +10,9 @@ $allPassed = $true
 # Test 1: Check directory structure
 Write-Host "[1/5] Checking directory structure..." -ForegroundColor Yellow
 $requiredDirs = @(
-    "plan",
-    "plan/lm_studio_config",
-    "plan/powershell_wrappers",
-    "plan/crush_scripts"
+    "scripts",
+    "scripts/lm_studio",
+    "plan"
 )
 
 foreach ($dir in $requiredDirs) {
@@ -30,13 +29,13 @@ Write-Host ""
 Write-Host "[2/5] Checking required files..." -ForegroundColor Yellow
 $requiredFiles = @(
     "plan/plan.md",
-    "plan/lm_studio_config/README.md",
-    "plan/lm_studio_config/crush_config.json",
-    "plan/powershell_wrappers/send_prompt.ps1",
-    "plan/powershell_wrappers/list_models.ps1",
-    "plan/powershell_wrappers/README.md",
-    "plan/crush_scripts/reasoning_layer.ps1",
-    "plan/crush_scripts/README.md",
+    "scripts/lm_studio/README.md",
+    "scripts/lm_studio/crush_config.example.json",
+    "scripts/lm_studio/send_prompt.ps1",
+    "scripts/lm_studio/list_models.ps1",
+    "scripts/lm_studio/reasoning_layer.ps1",
+    "scripts/lm_studio/test_setup.ps1",
+    "scripts/lm_studio/test_reasoning_layer.ps1",
     ".claude/automanage.md"
 )
 
@@ -53,9 +52,9 @@ foreach ($file in $requiredFiles) {
 Write-Host ""
 Write-Host "[3/5] Checking PowerShell scripts..." -ForegroundColor Yellow
 $scripts = @(
-    "plan/powershell_wrappers/send_prompt.ps1",
-    "plan/powershell_wrappers/list_models.ps1",
-    "plan/crush_scripts/reasoning_layer.ps1"
+    "scripts/lm_studio/send_prompt.ps1",
+    "scripts/lm_studio/list_models.ps1",
+    "scripts/lm_studio/reasoning_layer.ps1"
 )
 
 foreach ($script in $scripts) {
@@ -92,14 +91,14 @@ try {
 Write-Host ""
 Write-Host "[5/5] Validating configuration files..." -ForegroundColor Yellow
 try {
-    $crushConfig = Get-Content "plan/lm_studio_config/crush_config.json" -Raw | ConvertFrom-Json
-    Write-Host "  [OK] crush_config.json is valid JSON" -ForegroundColor Green
+    $crushConfig = Get-Content "scripts/lm_studio/crush_config.example.json" -Raw | ConvertFrom-Json
+    Write-Host "  [OK] crush_config.example.json is valid JSON" -ForegroundColor Green
 
     if ($crushConfig.providers.lmstudio) {
         Write-Host "  [OK] LM Studio provider configured" -ForegroundColor Green
     }
 } catch {
-    Write-Host "  [FAIL] crush_config.json has issues" -ForegroundColor Red
+    Write-Host "  [FAIL] crush_config.example.json has issues" -ForegroundColor Red
     $allPassed = $false
 }
 
@@ -118,13 +117,11 @@ Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Install and start LM Studio from https://lmstudio.ai/" -ForegroundColor White
 Write-Host "2. Download Qwen3-8B model (Q4 or Q5 quantization)" -ForegroundColor White
 Write-Host "3. Start the local server in LM Studio" -ForegroundColor White
-Write-Host "4. Test with: .\plan\powershell_wrappers\list_models.ps1" -ForegroundColor White
-Write-Host "5. Import reasoning layer: Import-Module .\plan\crush_scripts\reasoning_layer.ps1" -ForegroundColor White
+Write-Host "4. Test with: .\scripts\lm_studio\list_models.ps1" -ForegroundColor White
+Write-Host "5. Import reasoning layer: Import-Module .\scripts\lm_studio\reasoning_layer.ps1" -ForegroundColor White
 Write-Host ""
 
 Write-Host "Documentation:" -ForegroundColor Cyan
 Write-Host "  - plan/plan.md - Architecture overview" -ForegroundColor Gray
-Write-Host "  - plan/lm_studio_config/README.md - LM Studio setup" -ForegroundColor Gray
-Write-Host "  - plan/powershell_wrappers/README.md - API wrapper usage" -ForegroundColor Gray
-Write-Host "  - plan/crush_scripts/README.md - Reasoning layer guide" -ForegroundColor Gray
+Write-Host "  - scripts/lm_studio/README.md - Complete LM Studio integration guide" -ForegroundColor Gray
 Write-Host ""

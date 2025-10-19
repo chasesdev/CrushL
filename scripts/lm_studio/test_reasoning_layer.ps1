@@ -8,7 +8,7 @@ Write-Host ""
 # Test 1: Import the module
 Write-Host "[1/5] Importing reasoning layer module..." -ForegroundColor Yellow
 try {
-    Import-Module .\plan\crush_scripts\reasoning_layer.ps1 -Force -ErrorAction Stop
+    Import-Module .\scripts\lm_studio\reasoning_layer.ps1 -Force -ErrorAction Stop
     Write-Host "  [OK] Module imported successfully" -ForegroundColor Green
 } catch {
     Write-Host "  [FAIL] Failed to import module" -ForegroundColor Red

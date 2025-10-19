@@ -14,18 +14,16 @@ Successfully implemented the Crush Mk2 Plan (Crush → Toke) - a self-contained 
 
 ```
 /plan/
-├── plan.md                           # Main architecture document
+└── plan.md                           # Architecture overview
+
+/scripts/lm_studio/
+├── README.md                         # Complete integration guide
+├── send_prompt.ps1                   # Send prompts to LM Studio
+├── list_models.ps1                   # List available models
+├── reasoning_layer.ps1               # Task management + AI reasoning
 ├── test_setup.ps1                    # Validation script
-├── lm_studio_config/
-│   ├── README.md                     # LM Studio setup guide
-│   └── crush_config.json             # Crush config for LM Studio
-├── powershell_wrappers/
-│   ├── send_prompt.ps1               # Send prompts to LM Studio
-│   ├── list_models.ps1               # List available models
-│   └── README.md                     # PowerShell wrapper docs
-└── crush_scripts/
-    ├── reasoning_layer.ps1           # Task management + AI reasoning
-    └── README.md                     # Reasoning layer docs
+├── test_reasoning_layer.ps1          # Reasoning layer test
+└── crush_config.example.json         # Example Crush config for LM Studio
 
 /.claude/
 └── automanage.md                     # Scaffold consistency guide
@@ -56,30 +54,30 @@ Successfully implemented the Crush Mk2 Plan (Crush → Toke) - a self-contained 
 
 ## Files Created
 
-### Configuration & Documentation (9 files)
-1. `plan/plan.md` - Architecture and scaffold description
-2. `plan/test_setup.ps1` - Validation script
-3. `plan/lm_studio_config/README.md` - LM Studio setup guide
-4. `plan/lm_studio_config/crush_config.json` - Crush configuration
-5. `plan/powershell_wrappers/README.md` - API wrapper documentation
-6. `plan/crush_scripts/README.md` - Reasoning layer guide
-7. `.claude/automanage.md` - Scaffold consistency guidelines
-8. `IMPLEMENTATION_SUMMARY.md` - This file
+### Planning & Documentation (3 files)
+1. `plan/plan.md` - Architecture overview
+2. `scripts/lm_studio/README.md` - Complete integration guide
+3. `.claude/automanage.md` - Scaffold consistency guidelines
 
-### PowerShell Scripts (3 files)
-1. `plan/powershell_wrappers/send_prompt.ps1` - ~100 lines
-2. `plan/powershell_wrappers/list_models.ps1` - ~60 lines
-3. `plan/crush_scripts/reasoning_layer.ps1` - ~350 lines
+### PowerShell Scripts (5 files)
+1. `scripts/lm_studio/send_prompt.ps1` - ~100 lines
+2. `scripts/lm_studio/list_models.ps1` - ~60 lines
+3. `scripts/lm_studio/reasoning_layer.ps1` - ~350 lines
+4. `scripts/lm_studio/test_setup.ps1` - ~130 lines
+5. `scripts/lm_studio/test_reasoning_layer.ps1` - ~75 lines
 
-**Total**: 12 files, ~2500 lines of code and documentation
+### Configuration (1 file)
+1. `scripts/lm_studio/crush_config.example.json` - Example configuration
+
+**Total**: 9 files, ~2500 lines of code and documentation
 
 ## Validation Results
 
-Ran `plan/test_setup.ps1`:
+Ran `scripts/lm_studio/test_setup.ps1`:
 
 ```
 [1/5] Checking directory structure... ✅
-  - All 4 directories created
+  - All directories created
 
 [2/5] Checking required files... ✅
   - All 9 files present
@@ -91,7 +89,7 @@ Ran `plan/test_setup.ps1`:
   - Not running (expected - user will set up later)
 
 [5/5] Validating configuration files... ✅
-  - crush_config.json is valid JSON
+  - crush_config.example.json is valid JSON
   - LM Studio provider configured correctly
 
 [SUCCESS] All required files and directories are in place!
@@ -115,19 +113,19 @@ Ran `plan/test_setup.ps1`:
 3. **Test the Setup**
    ```powershell
    # Validate installation
-   .\plan\test_setup.ps1
+   .\scripts\lm_studio\test_setup.ps1
 
    # List available models
-   .\plan\powershell_wrappers\list_models.ps1
+   .\scripts\lm_studio\list_models.ps1
 
    # Test a prompt
-   .\plan\powershell_wrappers\send_prompt.ps1 -Prompt "Hello!" -Pretty
+   .\scripts\lm_studio\send_prompt.ps1 -Prompt "Hello!" -Pretty
    ```
 
 4. **Use the Reasoning Layer**
    ```powershell
    # Import the module
-   Import-Module .\plan\crush_scripts\reasoning_layer.ps1
+   Import-Module .\scripts\lm_studio\reasoning_layer.ps1
 
    # Add a task
    Add-Task -Description "Implement user authentication" -Priority high
@@ -143,7 +141,7 @@ Ran `plan/test_setup.ps1`:
 
 ```powershell
 # 1. Import the reasoning layer
-Import-Module .\plan\crush_scripts\reasoning_layer.ps1 -Force
+Import-Module .\scripts\lm_studio\reasoning_layer.ps1 -Force
 
 # 2. Add a high-level task
 Add-Task -Description "Build a REST API for user management" -Priority high
@@ -228,7 +226,6 @@ Get-TaskList -Status completed
 2. **Manual setup**: LM Studio requires manual installation
 3. **GPU required**: Needs capable GPU for local inference
 4. **No persistence**: Each AI call is independent (no conversation history)
-5. **Experimental**: Still in /plan/ directory, not production-ready
 
 ## Resources
 
@@ -236,7 +233,7 @@ Get-TaskList -Status completed
 - **Qwen Models**: https://huggingface.co/Qwen
 - **Crush**: https://github.com/charmbracelet/crush
 - **Plan Document**: `plan/plan.md`
-- **Setup Guide**: `plan/lm_studio_config/README.md`
+- **Complete Guide**: `scripts/lm_studio/README.md`
 
 ## Contributing
 
@@ -251,11 +248,12 @@ This scaffold is experimental and open to improvements:
 
 ## Git Status
 
-Current branch: `pr-1` (based on chasesdev/CrushMk2 PR #1)
+Current branch: `pr-2` (based on chasesdev/CrushMk2 PR #2)
 
-New files (untracked):
-- `.claude/` directory with automanage.md
-- `plan/` directory with all components
+Structure:
+- `plan/plan.md` - Planning document only
+- `scripts/lm_studio/` - All implementation files
+- `.claude/automanage.md` - Scaffold guidelines
 
 Ready to commit and create pull request when instructed.
 

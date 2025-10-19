@@ -23,7 +23,7 @@
 
 ### ✅ 2. PowerShell Wrappers Test
 
-#### list_models.ps1
+#### scripts/lm_studio/list_models.ps1
 **Status**: PASSED
 **Output**:
 ```
@@ -31,7 +31,7 @@ Total models: 4
 All models retrieved successfully
 ```
 
-#### send_prompt.ps1
+#### scripts/lm_studio/send_prompt.ps1
 **Status**: PASSED
 **Test Prompt**: "Write a hello world program in Python"
 **Response Quality**: ✅ Excellent
@@ -54,7 +54,7 @@ print("Hello, World!")
 
 ### ✅ 3. Reasoning Layer Module Test
 
-#### Module Loading
+#### scripts/lm_studio/reasoning_layer.ps1
 **Status**: PASSED
 All functions loaded successfully:
 - `Add-Task`
