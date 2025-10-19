@@ -376,7 +376,8 @@ func (l *Layer) GetTasks(sessionID string) ([]Task, error) {
 		return nil, nil
 	}
 
-	store, err := l.getStore(sessionID)
+	// Use getOrCreateStore to load from disk if not in memory
+	store, err := l.getOrCreateStore(sessionID)
 	if err != nil {
 		return nil, err
 	}
