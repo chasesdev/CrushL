@@ -157,7 +157,7 @@ type Attribution struct {
 }
 
 type ReasoningConfig struct {
-	Enabled         bool     `json:"enabled" jsonschema:"description=Enable reasoning layer for automatic task management,default=false"`
+	Enabled         bool     `json:"enabled" jsonschema:"description=Enable reasoning layer for automatic task management,default=true"`
 	Provider        string   `json:"provider" jsonschema:"description=Provider ID to use for reasoning layer,example=lmstudio"`
 	BaseURL         string   `json:"base_url" jsonschema:"description=Base URL for the reasoning provider API,format=uri,example=http://localhost:1234"`
 	ModelPreference []string `json:"model_preference,omitempty" jsonschema:"description=Ordered list of preferred models for reasoning,example=glm-4.6,example=qwen3-next-80b,example=qwen3-8b"`

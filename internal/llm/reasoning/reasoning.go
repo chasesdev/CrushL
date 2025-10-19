@@ -14,15 +14,22 @@ import (
 
 // Layer provides reasoning capabilities for intelligent task management
 type Layer struct {
-	detector       *ModelDetector
-	analyzer       *Analyzer
-	stores         map[string]*TaskStore // sessionID -> TaskStore
-	storesMu       sync.RWMutex
-	dataDir        string
-	autoCreate     bool
-	autoUpdate     bool
-	enabled        bool
-	currentModel   string
+	detector         *ModelDetector
+	analyzer         *Analyzer
+	fastParser       *FastParser
+	proseParser      *ProseParser
+	stores           map[string]*TaskStore // sessionID -> TaskStore
+	storesMu         sync.RWMutex
+	pendingApprovals map[string]*PendingTaskApproval // sessionID -> pending tasks
+	approvalsMu      sync.RWMutex
+	dataDir          string
+	autoCreate       bool
+	autoUpdate       bool
+	enabled          bool
+	currentModel     string
+	useFastParser    bool  // whether to use fast regex parser
+	useProseParser   bool  // whether to use prose NLP parser
+	requireApproval  bool  // whether to require user approval for tasks
 }
 
 // Config holds configuration for the reasoning layer
@@ -53,16 +60,24 @@ func New(ctx context.Context, cfg Config) (*Layer, error) {
 	}
 
 	analyzer := NewAnalyzer(cfg.Provider, model)
+	fastParser := NewFastParser()
+	proseParser := NewProseParser()
 
 	layer := &Layer{
-		detector:     detector,
-		analyzer:     analyzer,
-		stores:       make(map[string]*TaskStore),
-		dataDir:      cfg.DataDir,
-		autoCreate:   cfg.AutoCreate,
-		autoUpdate:   cfg.AutoUpdate,
-		enabled:      true,
-		currentModel: model,
+		detector:         detector,
+		analyzer:         analyzer,
+		fastParser:       fastParser,
+		proseParser:      proseParser,
+		stores:           make(map[string]*TaskStore),
+		pendingApprovals: make(map[string]*PendingTaskApproval),
+		dataDir:          cfg.DataDir,
+		autoCreate:       cfg.AutoCreate,
+		autoUpdate:       cfg.AutoUpdate,
+		enabled:          true,
+		currentModel:     model,
+		useFastParser:    true,  // enable fast parser by default
+		useProseParser:   true,  // enable prose parser by default
+		requireApproval:  true,  // require approval by default
 	}
 
 	slog.Info("Reasoning layer initialized",
@@ -73,16 +88,59 @@ func New(ctx context.Context, cfg Config) (*Layer, error) {
 	return layer, nil
 }
 
-// AnalyzeUserRequest processes a user message and creates tasks if auto-create is enabled
-func (l *Layer) AnalyzeUserRequest(ctx context.Context, sessionID string, msg message.Message) error {
-	if !l.enabled || !l.autoCreate {
+// GetPendingApproval returns pending task approval for a session
+func (l *Layer) GetPendingApproval(sessionID string) *PendingTaskApproval {
+	l.approvalsMu.RLock()
+	defer l.approvalsMu.RUnlock()
+	return l.pendingApprovals[sessionID]
+}
+
+// ApproveTasks approves pending tasks and creates them
+func (l *Layer) ApproveTasks(sessionID string, approved bool) error {
+	l.approvalsMu.Lock()
+	pending := l.pendingApprovals[sessionID]
+	delete(l.pendingApprovals, sessionID)
+	l.approvalsMu.Unlock()
+
+	if pending == nil {
+		return fmt.Errorf("no pending approval for session %s", sessionID)
+	}
+
+	if !approved {
+		slog.Info("User rejected tasks", "session", sessionID, "count", len(pending.Tasks))
 		return nil
 	}
 
-	// Get or create task store for this session
+	// Get or create task store
 	store, err := l.getOrCreateStore(sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get task store: %w", err)
+	}
+
+	// Create approved tasks
+	created := 0
+	for _, task := range pending.Tasks {
+		// Skip completed tasks
+		if task.IsCompleted {
+			continue
+		}
+
+		if _, err := store.AddTask(task.Description, task.Priority, task.Tags); err != nil {
+			slog.Warn("Failed to add approved task", "error", err, "task", task.Description)
+		} else {
+			created++
+			slog.Info("Created approved task", "description", task.Description, "priority", task.Priority)
+		}
+	}
+
+	slog.Info("User approved tasks", "session", sessionID, "created", created)
+	return nil
+}
+
+// AnalyzeUserRequest processes a user message and creates tasks if auto-create is enabled
+func (l *Layer) AnalyzeUserRequest(ctx context.Context, sessionID string, msg message.Message) (*PendingTaskApproval, error) {
+	if !l.enabled || !l.autoCreate {
+		return nil, nil
 	}
 
 	// Extract text content from message
@@ -95,19 +153,150 @@ func (l *Layer) AnalyzeUserRequest(ctx context.Context, sessionID string, msg me
 	}
 
 	if textContent == "" {
-		return nil // No text to analyze
+		return nil, nil // No text to analyze
 	}
 
-	// Extract tasks using analyzer
-	existingTasks := store.GetAllTasks()
-	extractedTasks, err := l.analyzer.ExtractTasks(ctx, textContent, existingTasks)
+	var parsedTasks []ParsedTask
+	var source string
+
+	// 3-Tier Parsing Strategy:
+	// Tier 1: FastParser (regex) - ~5-13μs - structured patterns
+	// Tier 2: ProseParser (NLP) - ~5-50ms - natural language
+	// Tier 3: LLM Analyzer - ~500-2000ms - complex semantics
+
+	// Tier 1: Try fast parser first if enabled
+	if l.useFastParser {
+		var needsMore bool
+		parsedTasks, needsMore = l.fastParser.ExtractTasks(textContent)
+
+		slog.Info("Fast parser extracted tasks", "count", len(parsedTasks), "needs_more", needsMore)
+
+		// If fast parser found tasks, use those immediately
+		if len(parsedTasks) > 0 {
+			slog.Info("Using fast parser results, skipping NLP/LLM analysis")
+			source = "fast-parser"
+		} else if needsMore {
+			// Tier 2: Try prose parser for natural language
+			if l.useProseParser {
+				var needsLLM bool
+				parsedTasks, needsLLM = l.proseParser.ExtractTasks(textContent)
+
+				slog.Info("Prose parser extracted tasks", "count", len(parsedTasks), "needs_llm", needsLLM)
+
+				// If prose parser found tasks, use those
+				if len(parsedTasks) > 0 {
+					slog.Info("Using prose parser results, skipping LLM analysis")
+					source = "prose-nlp"
+				} else if needsLLM {
+					// Tier 3: Fall back to LLM analyzer for complex semantics
+					slog.Info("Prose parser needs LLM assistance, using analyzer")
+
+					// Get or create store to pass existing tasks
+					store, err := l.getOrCreateStore(sessionID)
+					if err != nil {
+						return nil, fmt.Errorf("failed to get task store: %w", err)
+					}
+					existingTasks := store.GetAllTasks()
+
+					llmTasks, err := l.analyzer.ExtractTasks(ctx, textContent, existingTasks)
+					if err != nil {
+						slog.Warn("Failed to extract tasks via LLM", "error", err)
+						return nil, nil // No tasks found
+					}
+
+					// Convert LLM tasks to ParsedTask format
+					parsedTasks = []ParsedTask{}
+					for _, lt := range llmTasks {
+						parsedTasks = append(parsedTasks, ParsedTask{
+							Description: lt.Description,
+							Priority:    lt.Priority,
+							Tags:        lt.Tags,
+							IsCompleted: false,
+						})
+					}
+					source = "llm-analyzer"
+				}
+			} else {
+				// Prose disabled, go straight to LLM
+				store, err := l.getOrCreateStore(sessionID)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get task store: %w", err)
+				}
+				existingTasks := store.GetAllTasks()
+
+				llmTasks, err := l.analyzer.ExtractTasks(ctx, textContent, existingTasks)
+				if err != nil {
+					slog.Warn("Failed to extract tasks via LLM", "error", err)
+					return nil, nil
+				}
+
+				for _, lt := range llmTasks {
+					parsedTasks = append(parsedTasks, ParsedTask{
+						Description: lt.Description,
+						Priority:    lt.Priority,
+						Tags:        lt.Tags,
+						IsCompleted: false,
+					})
+				}
+				source = "llm-analyzer"
+			}
+		}
+	} else {
+		// All parsers disabled, use LLM only
+		store, err := l.getOrCreateStore(sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get task store: %w", err)
+		}
+		existingTasks := store.GetAllTasks()
+
+		llmTasks, err := l.analyzer.ExtractTasks(ctx, textContent, existingTasks)
+		if err != nil {
+			slog.Warn("Failed to extract tasks", "error", err)
+			return nil, nil
+		}
+
+		for _, lt := range llmTasks {
+			parsedTasks = append(parsedTasks, ParsedTask{
+				Description: lt.Description,
+				Priority:    lt.Priority,
+				Tags:        lt.Tags,
+				IsCompleted: false,
+			})
+		}
+		source = "llm-analyzer"
+	}
+
+	// If no tasks found, return nil
+	if len(parsedTasks) == 0 {
+		return nil, nil
+	}
+
+	// If approval is required, store pending tasks
+	if l.requireApproval {
+		approval := &PendingTaskApproval{
+			SessionID: sessionID,
+			Tasks:     parsedTasks,
+			Source:    source,
+		}
+
+		l.approvalsMu.Lock()
+		l.pendingApprovals[sessionID] = approval
+		l.approvalsMu.Unlock()
+
+		slog.Info("Tasks pending approval", "session", sessionID, "count", len(parsedTasks))
+		return approval, nil
+	}
+
+	// Auto-approve if approval not required
+	store, err := l.getOrCreateStore(sessionID)
 	if err != nil {
-		slog.Warn("Failed to extract tasks", "error", err)
-		return nil // Don't fail the whole request
+		return nil, fmt.Errorf("failed to get task store: %w", err)
 	}
 
-	// Add extracted tasks to store
-	for _, task := range extractedTasks {
+	for _, task := range parsedTasks {
+		if task.IsCompleted {
+			continue
+		}
 		if _, err := store.AddTask(task.Description, task.Priority, task.Tags); err != nil {
 			slog.Warn("Failed to add task", "error", err, "task", task.Description)
 		} else {
@@ -115,7 +304,7 @@ func (l *Layer) AnalyzeUserRequest(ctx context.Context, sessionID string, msg me
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 // UpdateTasksFromResponse processes an LLM response and updates tasks if auto-update is enabled
